@@ -1,0 +1,4 @@
+# Outils du contrôleur (Mac), pas paquets à installer dans Debian.
+# Python 3.12+ pour cet environnement Molecule.
+ansible-core==2.21.5
+molecule==26.10.0

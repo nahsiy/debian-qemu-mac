@@ -1,0 +1,29 @@
+---
+# La VM existe déjà : QEMU et le Makefile en gèrent le cycle de vie.
+# Ici, Molecule utilise directement l'inventaire Ansible généré par le labo.
+ansible:
+  cfg:
+    defaults:
+      roles_path: ${MOLECULE_PROJECT_DIRECTORY}/../
+  executor:
+    args:
+      ansible_playbook:
+        - --inventory=${DEBIAN_VM_INVENTORY}
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+
+scenario:
+  test_sequence:
+    - converge
+    - idempotence
+    - verify
+  converge_sequence:
+    - converge
+  idempotence_sequence:
+    - idempotence
+  verify_sequence:
+    - verify
+
+verifier:
+  name: ansible

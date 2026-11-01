@@ -190,7 +190,7 @@ class VM:
                 f'{self.user}@127.0.0.1']
 
     def write_inventory(self):
-        data = {'all': {'hosts': {self.name: {
+        data = {'debian_lab': {'hosts': {self.name: {
             'ansible_host': '127.0.0.1', 'ansible_port': self.port,
             'ansible_user': self.user, 'ansible_ssh_private_key_file': str(self.key),
             'ansible_python_interpreter': '/usr/bin/python3',
@@ -329,7 +329,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['doctor', 'init', 'stop', 'status', 'destroy',
                         'create_snapshot', 'restore_snapshot', 'snapshots', 'ssh',
-                        'inventory', 'test', 'clean'])
+                        'inventory', 'test', 'converge', 'idempotence', 'verify', 'clean'])
     action = parser.parse_args().action
     vm = VM()
     need(not STATE.is_symlink() and not vm.folder.is_symlink(), 'Dossier VM symbolique refusé')
@@ -343,15 +343,19 @@ def main():
     elif action == 'inventory':
         need(vm.inventory.exists(), 'Créer la VM avec make vm_init')
         print(vm.inventory)
-    elif action == 'test':
-        role = os.environ.get('ROLE', '')
+    elif action in ['test', 'converge', 'idempotence', 'verify']:
+        role = os.environ.get('ROLE', 'roles/nginx_demo')
         need(role and Path(role).is_dir(), 'Indiquer ROLE=chemin/vers/le/role')
-        need(shutil.which('molecule'), 'Molecule absent ; installation séparée nécessaire')
+        local_molecule = ROOT / '.venv/bin/molecule'
+        molecule = str(local_molecule) if local_molecule.is_file() else shutil.which('molecule')
+        need(molecule, 'Molecule absent ; lancer make tools')
         need((Path(role) / 'molecule').is_dir(), 'Scénario Molecule absent dans ce rôle')
         with locked():
             vm.start()
         environment = dict(os.environ, DEBIAN_VM_INVENTORY=str(vm.inventory))
-        run(['molecule', 'test'], cwd=role, env=environment)
+        # Molecule launches ansible-playbook itself: use the same isolated toolchain.
+        environment['PATH'] = str(Path(molecule).parent) + os.pathsep + environment.get('PATH', '')
+        run([molecule, action], cwd=role, env=environment)
     else:
         with locked():
             if action == 'init':

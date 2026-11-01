@@ -1,0 +1,48 @@
+---
+# Verify observe le résultat ; il ne répare pas le service ni les fichiers.
+- name: Vérifier le serveur web obtenu
+  hosts: debian_lab
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Lire les états des services
+      ansible.builtin.service_facts:
+
+    - name: Vérifier que Nginx tourne et démarre au boot
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services.get('nginx.service', {}).get('state') == 'running'
+          - ansible_facts.services.get('nginx.service', {}).get('status') == 'enabled'
+        fail_msg: Nginx doit être démarré et activé au boot.
+
+    - name: Vérifier la syntaxe de la configuration Nginx
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Examiner le fichier de la page
+      ansible.builtin.stat:
+        path: /var/www/html/index.html
+      register: nginx_page_file
+
+    - name: Vérifier que la page est un fichier lisible
+      ansible.builtin.assert:
+        that:
+          - nginx_page_file.stat.exists
+          - nginx_page_file.stat.isreg
+          - nginx_page_file.stat.mode == '0644'
+
+    # Cette requête s'exécute DANS Debian, où 127.0.0.1 désigne la VM.
+    - name: Demander la page à Nginx par HTTP
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        status_code: 200
+        return_content: true
+      register: nginx_http_response
+
+    # Une attente explicite du scénario, indépendante de la variable du rôle.
+    - name: Vérifier le contenu réellement servi
+      ansible.builtin.assert:
+        that:
+          - "'Bonjour depuis le labo Molecule.' in nginx_http_response.content"
+        fail_msg: La page HTTP ne contient pas le message attendu par ce scénario.
+        success_msg: Nginx répond en HTTP 200 et sert la page attendue.

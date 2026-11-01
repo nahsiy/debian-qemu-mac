@@ -1,0 +1,8 @@
+---
+# Converge = appliquer le rôle. L'idempotence rejouera ce même playbook.
+- name: Appliquer le rôle Nginx sur Debian
+  hosts: debian_lab
+  become: true
+  gather_facts: false
+  roles:
+    - role: nginx_demo

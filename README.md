@@ -3,6 +3,9 @@
 Un laboratoire Debian ARM64 piloté par Make, avec QEMU/HVF, configuration
 cloud-init, accès SSH, inventaire Ansible et snapshots disque.
 
+Pour découvrir Molecule en exécutant un vrai rôle Nginx :
+**[suivre le guide pas à pas](docs/molecule-premiers-pas.md)**.
+
 Inspiré du Makefile et du script de laboratoire FreeBSD/QEMU partagés par
 **ephase**. Cette adaptation cible Debian sur Mac Apple Silicon ; le script
 de pilotage a été réécrit en Python.
@@ -119,7 +122,23 @@ ansible -i .vm/machines/debian-test/inventory.json all -m ping
 ansible -i .vm/machines/debian-test/inventory.json all -b -m command -a 'id -u'
 ```
 
-Pour un rôle possédant déjà un scénario Molecule adapté à une VM externe :
+Un premier rôle et son scénario sont fournis dans `roles/nginx_demo` :
+
+```sh
+make tools                 # Python 3.12+ : installation isolée sous .venv
+make molecule-converge     # Appliquer le rôle Nginx
+make molecule-idempotence  # Rejouer le rôle : aucun changement attendu
+make molecule-verify       # Vérifier le service, la configuration et HTTP
+make test                  # Les trois étapes à la suite
+```
+
+Les versions principales d'Ansible et Molecule sont fixées dans
+`requirements-dev.txt`. Les commandes utilisent automatiquement `.venv`.
+Le scénario utilise l'inventaire généré, garde la VM et le service en place
+et n'expose aucun port HTTP sur le Mac. La requête HTTP de vérification
+s'exécute depuis Debian.
+
+Pour un autre rôle possédant un scénario adapté à une VM externe :
 
 ```sh
 make test ROLE=/chemin/vers/roles/mon_role
@@ -132,8 +151,9 @@ inventaire et laisser le cycle de vie de la VM à ce laboratoire.** Cette variab
 n'est pas une option native de Molecule. La commande n'adapte pas un scénario
 Docker existant et ne crée pas un scénario absent.
 
-Molecule n'est pas installé automatiquement. Le scénario propre à ton rôle
-reste à configurer ; l'inventaire peut déjà servir directement avec Ansible.
+L'installation de Molecule est explicite avec `make tools`. L'exemple Nginx
+est prêt à être exécuté ; les scénarios propres à tes autres rôles restent
+à configurer. `make clean` supprime les VM et leur cache, mais conserve `.venv`.
 
 ## Suppression et diagnostic
 
@@ -178,5 +198,17 @@ Une première sonde Ansible lancée avec d'autres connexions simultanées a reç
 un reset SSH ; les sondes séquentielles et celle après restauration ont réussi.
 La cause de ce reset isolé n'a pas été établie.
 
-Non vérifiés : scénario Molecule (absent, outil non installé), exécution de tes
-rôles, autre Mac/version de QEMU, charge soutenue et plusieurs VM simultanées.
+Scénario Nginx vérifié avec Python 3.14.7, ansible-core 2.21.5 et Molecule 26.10.0 :
+
+- Première application : trois tâches réussies, deux changements (paquet et page).
+- Idempotence : trois tâches réussies, zéro changement.
+- Verify : sept tâches réussies, configuration valide et page reçue en HTTP 200.
+- Panne volontaire : après arrêt de Nginx, verify échoue sur le service arrêté.
+- Réparation par converge : un changement, le service redémarre.
+- Scénario complet `make test` : converge, idempotence et verify réussis.
+
+Le détail de l'exercice et les résultats attendus sont dans
+[le guide Molecule](docs/molecule-premiers-pas.md).
+
+Non vérifiés : tes autres rôles, autre Mac/version de QEMU, charge soutenue et
+plusieurs VM simultanées. Le scénario Nginx ne recrée pas la VM entre deux tests.

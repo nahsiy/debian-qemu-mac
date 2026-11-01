@@ -1,0 +1,3 @@
+---
+# Une variable du rôle : la valeur par défaut peut être changée par l'appelant.
+nginx_demo_message: Bonjour depuis le labo Molecule.

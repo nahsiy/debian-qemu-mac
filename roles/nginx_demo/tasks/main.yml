@@ -1,0 +1,24 @@
+---
+# Ces tâches décrivent un état souhaité. Elles ne doivent rien changer si
+# le paquet, le fichier et le service sont déjà dans cet état.
+- name: Installer Nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Publier la page du laboratoire
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: /var/www/html/index.html
+    owner: root
+    group: root
+    mode: '0644'
+
+# La page est un fichier statique : sa modification ne nécessite aucun restart.
+- name: Activer et démarrer Nginx
+  ansible.builtin.systemd_service:
+    name: nginx
+    enabled: true
+    state: started
