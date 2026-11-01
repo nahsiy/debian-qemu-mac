@@ -1,7 +1,7 @@
 # Debian sur Mac Apple Silicon avec QEMU
 
 Un laboratoire Debian ARM64 piloté par Make, avec QEMU/HVF, configuration
-cloud-init, accès SSH, inventaire Ansible et snapshots disque.
+cloud-init, accès SSH, inventaire Ansible et snapshots complets à chaud.
 
 Pour découvrir Molecule en exécutant un vrai rôle Nginx :
 **[suivre le guide pas à pas](docs/molecule-premiers-pas.md)**.
@@ -88,7 +88,7 @@ suivants vérifient la clé mémorisée. Les configurations et clés de `~/.ssh`
 ne sont pas modifiées. QEMU n'expose SSH que sur la boucle locale du Mac.
 L'invité dispose d'une sortie réseau via le réseau utilisateur QEMU.
 
-## Snapshots disque
+## Snapshots complets à chaud
 
 ```sh
 make vm_create_snapshot SNAPSHOT=base
@@ -96,22 +96,56 @@ make vm_create_snapshot SNAPSHOT=base
 make vm_restore_snapshot SNAPSHOT=base
 ```
 
-Ces commandes arrêtent proprement une VM démarrée, créent ou restaurent le
-snapshot QCOW2 puis la redémarrent. Une VM initialement arrêtée reste arrêtée.
-La mémoire vive n'est pas sauvegardée. Restaurer un snapshot efface les
-changements faits sur le disque depuis sa création. L'image et la configuration
-matérielle doivent rester compatibles : ce n'est pas une sauvegarde externe.
+Par défaut (`SNAPSHOT_MODE=live`), ces commandes passent par la socket QMP et
+les commandes QEMU `savevm`/`loadvm`. Elles sauvegardent puis restaurent le
+disque, la RAM, l'état du processeur et des périphériques. La VM doit être
+démarrée ; QEMU la suspend brièvement pendant l'opération, sans redémarrer
+Debian. Les sessions SSH existantes peuvent nécessiter une reconnexion.
+
+Un snapshot portant le même nom est remplacé lors d'une nouvelle sauvegarde.
+La restauration revient à l'état sauvegardé, y compris pour les processus en
+mémoire, et efface les changements disque suivants. Conserver la même version
+de QEMU, le même firmware et la même configuration matérielle. Les snapshots
+sont stockés dans le QCOW2 local : ce n'est pas une sauvegarde externe.
+
+### Migration d'une VM déjà démarrée avec une ancienne version du script
+
+Sur le Mac testé, `-daemonize` provoquait un plantage de QEMU pendant `savevm`
+(initialisation Objective-C après fork, pendant la sauvegarde du GIC HVF).
+Le script lance maintenant QEMU en arrière-plan depuis Python, sans cette
+option, avec ses sorties dans `.vm/machines/<nom>/qemu.log`.
+
+Une VM encore lancée avec `-daemonize` est refusée avant tout snapshot à chaud.
+Pour adopter le nouveau lancement tout en conservant son disque :
+
+```sh
+make vm_stop
+make vm_init
+```
+
+### Snapshots disque à froid
+
+L'ancien comportement reste disponible explicitement :
+
+```sh
+make vm_create_snapshot SNAPSHOT=base-disque SNAPSHOT_MODE=disk
+make vm_restore_snapshot SNAPSHOT=base-disque SNAPSHOT_MODE=disk
+```
+
+Ce mode arrête proprement une VM active, utilise `qemu-img snapshot`, puis la
+redémarre. Une VM déjà arrêtée le reste. Seul le disque est restauré ; la RAM
+n'est pas reprise. Pour les snapshots disque créés avant cette mise à jour,
+utiliser `SNAPSHOT_MODE=disk` : le mode à chaud refuse une entrée sans état RAM.
 
 Pour lister les snapshots :
 
 ```sh
-make vm_stop
 make vm_snapshots
-make vm_init
 ```
 
-L'arrêt utilise le protocole QMP et attend la fin de QEMU ; aucun `kill -9`
-n'est utilisé. Un échec d'arrêt bloque la suppression et les snapshots.
+La liste affiche la taille de l'état mémoire (`VM_SIZE`) pour distinguer les
+snapshots complets des snapshots disque. L'arrêt utilise QMP et attend la fin
+de QEMU ; un échec d'arrêt bloque la suppression et les snapshots à froid.
 
 ## Ansible et Molecule
 
@@ -167,6 +201,7 @@ de recréer la VM sans retélécharger l'image et sans disque de base partagé.
 
 En cas de délai dépassé, la VM est conservée pour diagnostic. La console série
 du dernier démarrage est dans `.vm/machines/<nom>/console.log`.
+Les messages du processus QEMU sont dans `.vm/machines/<nom>/qemu.log`.
 Si SSH fonctionne, contrôler aussi `sudo cloud-init status --long` et
 `sudo journalctl -u cloud-final` dans l'invité.
 
@@ -210,5 +245,18 @@ Scénario Nginx vérifié avec Python 3.14.7, ansible-core 2.21.5 et Molecule 26
 Le détail de l'exercice et les résultats attendus sont dans
 [le guide Molecule](docs/molecule-premiers-pas.md).
 
+Les snapshots à chaud ont également été vérifiés sur cette configuration :
+valeur uniquement en RAM retrouvée après restauration, même PID, même
+identifiant de démarrage Debian et contenu disque rétabli. Le test de
+régression passe par le vrai lancement QEMU et une VM jetable.
+
+```sh
+make test-unit  # Tests du script, sans démarrer de VM
+make test-vm    # Test réel QEMU/HVF : crée puis supprime une VM de 2 Gio
+```
+
+`test-vm` réutilise l'image en cache, ou la télécharge si nécessaire. Il teste
+le cycle des snapshots du script ; `make test` reste le scénario Molecule Nginx.
+
 Non vérifiés : tes autres rôles, autre Mac/version de QEMU, charge soutenue et
-plusieurs VM simultanées. Le scénario Nginx ne recrée pas la VM entre deux tests.
+plusieurs scénarios Molecule exécutés en parallèle. Le scénario Nginx ne recrée pas la VM entre deux tests.

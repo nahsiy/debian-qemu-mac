@@ -165,6 +165,10 @@ Il ne repart pas automatiquement d'une Debian vierge. Pour tester une première
 installation, utilise une nouvelle VM dédiée ou restaure un snapshot créé
 avant l'installation de Nginx. Par exemple :
 
+Le snapshot par défaut est complet : disque et RAM, avec restauration sans
+redémarrage de Debian. Si tu préfères restaurer uniquement le disque puis
+redémarrer, ajoute `SNAPSHOT_MODE=disk` aux deux commandes de snapshot.
+
 ```sh
 make vm_init MACHINE_NAME=molecule-propre SSH_PORT_LOCAL=2223
 make vm_create_snapshot MACHINE_NAME=molecule-propre SSH_PORT_LOCAL=2223 SNAPSHOT=avant-nginx

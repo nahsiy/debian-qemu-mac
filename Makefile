@@ -11,11 +11,12 @@ VM_MEMORY ?= 2048
 VM_DISK_SIZE ?= 20G
 VM_TIMEOUT ?= 300
 SNAPSHOT ?=
+SNAPSHOT_MODE ?= live
 ROLE ?= roles/nginx_demo
 
-export MACHINE_NAME SSH_PORT_LOCAL SSH_USER VM_CPUS VM_MEMORY VM_DISK_SIZE VM_TIMEOUT SNAPSHOT ROLE
+export MACHINE_NAME SSH_PORT_LOCAL SSH_USER VM_CPUS VM_MEMORY VM_DISK_SIZE VM_TIMEOUT SNAPSHOT SNAPSHOT_MODE ROLE
 
-.PHONY: help tools doctor vm_init vm_stop vm_status vm_destroy vm_create_snapshot vm_restore_snapshot vm_snapshots ssh inventory test molecule-converge molecule-idempotence molecule-verify clean
+.PHONY: help tools doctor vm_init vm_stop vm_status vm_destroy vm_create_snapshot vm_restore_snapshot vm_snapshots ssh inventory test molecule-converge molecule-idempotence molecule-verify test-unit test-vm clean
 
 help:
 	@echo 'make tools                        Installer Ansible/Molecule dans .venv (Python 3.12+)'
@@ -25,14 +26,17 @@ help:
 	@echo 'make inventory                    Afficher le chemin de l’inventaire Ansible'
 	@echo 'make vm_status                    Afficher l’état de la VM'
 	@echo 'make vm_stop                      Arrêter proprement Debian'
-	@echo 'make vm_create_snapshot SNAPSHOT=base   Snapshot disque avec arrêt/redémarrage'
-	@echo 'make vm_restore_snapshot SNAPSHOT=base  Restaurer le disque (efface les changements suivants)'
-	@echo 'make vm_snapshots                 Lister les snapshots disque'
+	@echo 'make vm_create_snapshot SNAPSHOT=base   Snapshot complet à chaud (disque + RAM)'
+	@echo 'make vm_restore_snapshot SNAPSHOT=base  Restaurer le disque et la RAM sans reboot'
+	@echo 'Ajouter SNAPSHOT_MODE=disk pour un snapshot disque avec arrêt/redémarrage'
+	@echo 'make vm_snapshots                 Lister les snapshots (VM démarrée ou arrêtée)'
 	@echo 'make molecule-converge            Appliquer le rôle nginx_demo'
 	@echo 'make molecule-idempotence         Rejouer et vérifier zéro changement'
 	@echo 'make molecule-verify              Vérifier le service, la configuration et la page'
 	@echo 'make test                         Converge → idempotence → verify pour nginx_demo'
 	@echo 'make test ROLE=roles/mon_role      Tester un autre rôle configuré pour cette VM'
+	@echo 'make test-unit                    Tester les garde-fous du script, sans VM'
+	@echo 'make test-vm                      Tester réellement les snapshots sur une VM jetable'
 	@echo 'make vm_destroy                   Supprimer cette VM en conservant le cache image'
 	@echo 'make clean                        Effacer .vm si toutes les VM sont arrêtées'
 
@@ -82,6 +86,12 @@ molecule-idempotence:
 
 molecule-verify:
 	@$(PYTHON) scripts/debian_vm.py verify
+
+test-unit:
+	@$(PYTHON) -B -m unittest discover -s tests -v
+
+test-vm:
+	@RUN_VM_INTEGRATION=1 $(PYTHON) -B -m unittest discover -s tests -v
 
 clean:
 	@$(PYTHON) scripts/debian_vm.py clean

@@ -73,6 +73,7 @@ class VM:
         self.key = self.folder / 'id_ed25519'
         self.seed = self.folder / 'seed.iso'
         self.serial = self.folder / 'console.log'
+        self.log = self.folder / 'qemu.log'
         self.inventory = self.folder / 'inventory.json'
 
     def running(self):
@@ -99,6 +100,11 @@ class VM:
             if path.is_file():
                 return path
         raise RuntimeError('Firmware introuvable ; définir QEMU_FIRMWARE (edk2-aarch64-code.fd)')
+
+    def legacy_launch(self):
+        """Old daemonized HVF processes must be restarted before savevm."""
+        command = output(['ps', '-p', self.pidfile.read_text().strip(), '-o', 'command='])
+        return '-daemonize' in command.split()
 
     def doctor(self):
         need(platform.system() == 'Darwin' and platform.machine() == 'arm64',
@@ -214,7 +220,7 @@ class VM:
             self.pidfile.unlink(missing_ok=True)
             self.qmp.unlink(missing_ok=True)
             print(f'Démarrage de {self.name} : {self.cpus} CPU, {self.memory} Mio, SSH {self.port}', flush=True)
-            run(['qemu-system-aarch64', '-name', self.name,
+            self.launch_qemu(['qemu-system-aarch64', '-name', self.name,
                  '-machine', 'virt', '-accel', 'hvf', '-cpu', 'host',
                  '-smp', self.cpus, '-m', self.memory, '-bios', self.firmware(),
                  '-drive', f'if=none,id=os,file={self.disk},format=qcow2',
@@ -226,17 +232,37 @@ class VM:
                  '-device', 'virtio-rng-pci', '-display', 'none', '-monitor', 'none',
                  '-serial', f'file:{self.serial}',
                  '-qmp', f'unix:{self.qmp},server=on,wait=off',
-                 '-pidfile', self.pidfile, '-daemonize'])
+                 '-pidfile', self.pidfile])
         else:
             self.write_inventory()
             print(f'{self.name} fonctionne déjà.', flush=True)
         self.wait_ready()
 
+    def launch_qemu(self, arguments):
+        # QEMU's internal -daemonize fork breaks Objective-C initialization in
+        # macOS HVF GIC snapshot code. Spawn a detached executable instead.
+        with self.log.open('ab') as log:
+            log.write(b'\n--- QEMU start ---\n')
+            log.flush()
+            process = subprocess.Popen([str(value) for value in arguments],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True)
+        self._process = process
+        deadline = time.monotonic() + 15
+        while not (self.pidfile.exists() and self.qmp.exists()):
+            need(process.poll() is None, f'QEMU a échoué au démarrage ; consulter {self.log}')
+            if time.monotonic() >= deadline:
+                process.terminate()
+                process.wait(timeout=10)
+                raise RuntimeError(f'QMP non disponible au démarrage ; consulter {self.log}')
+            time.sleep(0.1)
+        need(process.poll() is None, f'QEMU est arrêté ; consulter {self.log}')
+
     def wait_ready(self):
         print('Attente de SSH et de cloud-init…', flush=True)
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
-            need(self.running(), f'QEMU est arrêté ; consulter {self.serial}')
+            need(self.running(), f'QEMU est arrêté ; consulter {self.log} et {self.serial}')
             try:
                 result = subprocess.run(self.ssh_command() + ['true'], capture_output=True,
                                         timeout=min(8, max(1, deadline - time.monotonic())), check=False)
@@ -256,15 +282,18 @@ class VM:
         raise RuntimeError(f'Délai de {self.timeout}s dépassé ; consulter {self.serial}. '
                            'La VM est conservée pour diagnostic.')
 
-    def qmp_command(self, command):
+    def qmp_command(self, command, arguments=None, timeout=10):
         with socket.socket(socket.AF_UNIX) as connection:
-            connection.settimeout(10)
+            connection.settimeout(timeout)
             connection.connect(str(self.qmp))
             with connection.makefile('rwb', buffering=0) as stream:
                 greeting = json.loads(stream.readline())
                 need('QMP' in greeting, 'Réponse QMP invalide')
                 for number, operation in enumerate(['qmp_capabilities', command]):
-                    stream.write((json.dumps({'execute': operation, 'id': number}) + '\n').encode())
+                    request = {'execute': operation, 'id': number}
+                    if number == 1 and arguments is not None:
+                        request['arguments'] = arguments
+                    stream.write((json.dumps(request) + '\n').encode())
                     while True:
                         line = stream.readline()
                         need(line, 'QEMU a fermé QMP sans confirmation')
@@ -272,6 +301,25 @@ class VM:
                         if reply.get('id') == number:
                             need('error' not in reply, f'Erreur QMP : {reply}')
                             break
+                return reply.get('return')
+
+    def monitor_action(self, command):
+        # HMP may return an error as TEXT inside a successful QMP response.
+        reply = self.qmp_command('human-monitor-command', {'command-line': command}, timeout=120)
+        need(isinstance(reply, str) and not reply.strip(), f'Commande QEMU échouée : {reply}')
+
+    def snapshot_info(self):
+        for block in self.qmp_command('query-block'):
+            if block.get('device') == 'os':
+                return block.get('inserted', {}).get('image', {}).get('snapshots', [])
+        raise RuntimeError('Disque système introuvable dans la réponse QMP')
+
+    def list_snapshots(self):
+        need(self.disk.exists(), 'Créer la VM avec make vm_init')
+        if self.running():
+            print(self.qmp_command('human-monitor-command', {'command-line': 'info snapshots'}), flush=True)
+        else:
+            run(['qemu-img', 'snapshot', '-l', self.disk])
 
     def stop(self):
         if not self.running():
@@ -283,6 +331,8 @@ class VM:
         while self.running() and time.monotonic() < deadline:
             time.sleep(1)
         need(not self.running(), 'Arrêt non confirmé ; disque conservé, aucune suppression forcée')
+        if getattr(self, '_process', None) is not None:
+            self._process.wait(timeout=5)
         self.pidfile.unlink(missing_ok=True)
         self.qmp.unlink(missing_ok=True)
 
@@ -291,6 +341,27 @@ class VM:
         need(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', name),
              'Indiquer SNAPSHOT=nom (lettres, chiffres, point, tiret, underscore)')
         need(self.disk.exists(), 'Créer la VM avec make vm_init')
+        mode = os.environ.get('SNAPSHOT_MODE', 'live')
+        need(mode in ['live', 'disk'], 'SNAPSHOT_MODE doit être live ou disk')
+        if mode == 'live':
+            need(self.running(), 'Démarrer la VM avec make vm_init pour un snapshot à chaud')
+            need(not self.legacy_launch(),
+                 'Ancien lancement -daemonize : exécuter make vm_stop puis make vm_init avant un snapshot à chaud')
+            need(self.qmp_command('query-status')['running'], 'La VM doit être en cours d’exécution')
+            if restore:
+                snapshot = next((entry for entry in self.snapshot_info() if entry['name'] == name), None)
+                need(snapshot, f'Snapshot introuvable : {name}')
+                need(snapshot.get('vm-state-size', 0) > 0,
+                     'Ce snapshot contient seulement le disque ; utiliser SNAPSHOT_MODE=disk')
+            self.monitor_action(f'{"loadvm" if restore else "savevm"} {name}')
+            need(self.qmp_command('query-status')['running'], 'QEMU n’a pas repris la VM après le snapshot')
+            if restore:
+                self.wait_ready()
+            else:
+                need(any(entry['name'] == name and entry.get('vm-state-size', 0) > 0
+                         for entry in self.snapshot_info()), 'Snapshot RAM non confirmé par QEMU')
+            print(f'Snapshot complet {name} {"restauré" if restore else "créé"} à chaud.', flush=True)
+            return
         was_running = self.running()
         if was_running:
             self.stop()
@@ -367,9 +438,7 @@ def main():
             elif action in ['create_snapshot', 'restore_snapshot']:
                 vm.snapshot(restore=action == 'restore_snapshot')
             elif action == 'snapshots':
-                need(vm.disk.exists(), 'Créer la VM avec make vm_init')
-                need(not vm.running(), 'Arrêter la VM avec make vm_stop pour lister les snapshots')
-                run(['qemu-img', 'snapshot', '-l', vm.disk])
+                vm.list_snapshots()
             elif action == 'clean':
                 for folder in (STATE / 'machines').glob('*'):
                     need(not folder.is_symlink(), 'Dossier machine symbolique refusé')
